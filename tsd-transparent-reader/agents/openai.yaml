@@ -1,0 +1,4 @@
+interface:
+  display_name: "TSD Reader"
+  short_description: "读取并迁移透明加密文本文件到可直接使用的明文副本文件"
+  default_prompt: "使用这个技能读取 TSafe Doc 或 EnUES 透明加密文本文件的明文，并在需要时把原密文移到备份目录、原地重建同名明文文件。"

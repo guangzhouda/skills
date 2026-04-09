@@ -1,0 +1,6 @@
+interface:
+  display_name: "Code Route Mapper"
+  short_description: "扫描代码仓库，追踪请求流 / 数据流 / 事件流，并生成清晰的路由图与 SVG"
+  default_prompt: "Use $code-route-mapper to inspect this repository, trace the real request/data/event flow, and generate an evidence-backed Graphviz DOT + SVG route diagram."
+policy:
+  allow_implicit_invocation: true

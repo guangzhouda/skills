@@ -1,0 +1,4 @@
+interface:
+  display_name: "Debug Log Investigation"
+  short_description: "Trace code issues with targeted logs and root-cause narrowing"
+  default_prompt: "Use -log-investigation to locate a code issue by adding targeted logs, narrowing the execution path, and archiving the confirmed root cause."

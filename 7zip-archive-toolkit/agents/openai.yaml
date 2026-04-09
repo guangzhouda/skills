@@ -1,0 +1,4 @@
+interface:
+  display_name: "7-Zip Archive Toolkit"
+  short_description: "使用 7z.exe 在 Windows 下解压与压缩文件"
+  default_prompt: "Use this skill to extract or compress archives with 7-Zip on Windows using robust command patterns."
