@@ -1,0 +1,245 @@
+:root {
+  color-scheme: light;
+  --bg: #f6f7f9;
+  --ink: #1d252d;
+  --muted: #66717d;
+  --line: #d9dee5;
+  --panel: #ffffff;
+  --green: #16794c;
+  --yellow: #8a5a00;
+  --red: #a12a2a;
+  --blue: #1f5d9b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.45 "Segoe UI", Arial, sans-serif;
+}
+
+.topbar {
+  align-items: center;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  padding: 16px 20px;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 20px;
+  font-weight: 650;
+}
+
+h2 {
+  font-size: 15px;
+  margin-bottom: 10px;
+}
+
+p,
+small {
+  color: var(--muted);
+}
+
+main {
+  padding: 18px 20px 28px;
+}
+
+.status-pill,
+.badge {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: inline-block;
+  font-size: 12px;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
+.metrics {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(100px, 1fr));
+  margin-bottom: 16px;
+}
+
+.metrics div {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.metrics span {
+  display: block;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.table-wrap,
+.commits,
+.events {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: auto;
+}
+
+.commits,
+.events {
+  margin-top: 16px;
+  padding: 14px;
+}
+
+table {
+  border-collapse: collapse;
+  min-width: 1420px;
+  width: 100%;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--line);
+  padding: 9px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+td small {
+  display: block;
+  margin-top: 2px;
+}
+
+code {
+  font-family: Consolas, "Courier New", monospace;
+  overflow-wrap: anywhere;
+}
+
+button {
+  font: inherit;
+}
+
+.compact-button {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  cursor: pointer;
+  min-width: 48px;
+  padding: 3px 8px;
+}
+
+.compact-button:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.compact-button:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.section-head {
+  align-items: baseline;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.commit-panel {
+  min-height: 32px;
+}
+
+.commit-meta,
+.commit-empty {
+  margin-bottom: 10px;
+}
+
+.commit-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.commit-list li {
+  border-top: 1px solid var(--line);
+  margin: 0;
+  padding: 8px 0;
+}
+
+.commit-list div {
+  align-items: baseline;
+  display: flex;
+  gap: 10px;
+}
+
+.commit-list strong {
+  font-weight: 600;
+}
+
+h3 {
+  font-size: 13px;
+  margin: 12px 0 6px;
+}
+
+.commit-events {
+  margin: 0;
+  padding-left: 18px;
+}
+
+tr.ready .badge {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+tr.dirty .badge {
+  border-color: var(--yellow);
+  color: var(--yellow);
+}
+
+tr.blocked .badge {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+tr.merged .badge {
+  color: var(--blue);
+}
+
+ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+li {
+  margin: 4px 0;
+}
+
+@media (max-width: 720px) {
+  .topbar {
+    align-items: flex-start;
+    gap: 10px;
+    flex-direction: column;
+  }
+
+  .metrics {
+    grid-template-columns: repeat(2, minmax(100px, 1fr));
+  }
+}

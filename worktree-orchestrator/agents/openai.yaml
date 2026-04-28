@@ -1,0 +1,5 @@
+interface:
+  display_name: "Worktree Orchestrator"
+  short_description: "Coordinate task worktrees safely"
+  default_prompt: "Use $worktree-orchestrator to start, track, dashboard, and safely merge task worktrees."
+
