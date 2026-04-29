@@ -152,6 +152,9 @@ class WorktreeTaskTests(unittest.TestCase):
             self.assertIn("基线工作区", app)
             self.assertIn("等待批准", app)
             self.assertIn("服务返回了 HTML", app)
+            self.assertIn("Asia/Shanghai", app)
+            self.assertIn("chinaTime(state.lastScanAt)", app)
+            self.assertIn("chinaTime(task.updatedAt)", app)
             missing_url = f"http://127.0.0.1:{server.server_address[1]}/api/not-found"
             with self.assertRaises(urllib.error.HTTPError) as raised:
                 urllib.request.urlopen(missing_url, timeout=5)
@@ -161,6 +164,40 @@ class WorktreeTaskTests(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+            thread.join(timeout=5)
+
+    def test_dashboard_status_serves_stale_payload_when_scan_lock_times_out(self) -> None:
+        self.assertEqual(self.run_cli("start", "--title", "锁超时回退", "--task-id", "dashlock1"), 0)
+        asset_dir = SCRIPT.parents[1] / "assets" / "dashboard"
+        server = wt.ThreadingHTTPServer(("127.0.0.1", 0), wt.dashboard_handler(self.root, asset_dir))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        original_state_lock = wt.state_lock
+        original_cache_seconds = wt.DASHBOARD_STATUS_CACHE_SECONDS
+        try:
+            url = f"http://127.0.0.1:{server.server_address[1]}/api/status"
+            with urllib.request.urlopen(url, timeout=5) as response:
+                warm_payload = json.loads(response.read().decode("utf-8"))
+            self.assertFalse(warm_payload["dashboard"]["stale"])
+
+            @contextlib.contextmanager
+            def lock_timeout(*_args, **_kwargs):
+                raise wt.WorktreeError("Timed out waiting for state lock: test")
+                yield
+
+            wt.state_lock = lock_timeout
+            wt.DASHBOARD_STATUS_CACHE_SECONDS = -1
+            with urllib.request.urlopen(url, timeout=15) as response:
+                stale_payload = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(stale_payload["dashboard"]["stale"], True)
+            self.assertIn("Timed out waiting for state lock", stale_payload["dashboard"]["warning"])
+            self.assertTrue(any(t["taskId"] == "dashlock1" for t in stale_payload["tasks"]))
+        finally:
+            wt.state_lock = original_state_lock
+            wt.DASHBOARD_STATUS_CACHE_SECONDS = original_cache_seconds
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def test_commits_command_and_api_show_task_history(self) -> None:
         self.assertEqual(self.run_cli("start", "--title", "查看提交记录", "--task-id", "hist1"), 0)
@@ -193,6 +230,35 @@ class WorktreeTaskTests(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+            thread.join(timeout=5)
+
+    def test_dashboard_commits_api_uses_snapshot_without_rescanning(self) -> None:
+        self.assertEqual(self.run_cli("start", "--title", "提交记录快照", "--task-id", "histsnap1"), 0)
+        task = next(t for t in self.load_state()["tasks"] if t["taskId"] == "histsnap1")
+        worktree = Path(task["worktreePath"])
+        write(worktree / "snapshot-history.txt", "history\n")
+        self.assertEqual(self.run_cli("commit", "--task-id", "histsnap1", "--message", "实现快照提交记录"), 0)
+
+        asset_dir = SCRIPT.parents[1] / "assets" / "dashboard"
+        server = wt.ThreadingHTTPServer(("127.0.0.1", 0), wt.dashboard_handler(self.root, asset_dir))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        original_scan_project = wt.scan_project
+        try:
+            def fail_scan(*_args, **_kwargs):
+                raise wt.WorktreeError("scan should not run for dashboard commits")
+
+            wt.scan_project = fail_scan
+            url = f"http://127.0.0.1:{server.server_address[1]}/api/commits?taskId=histsnap1&limit=20"
+            with urllib.request.urlopen(url, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(payload["taskId"], "histsnap1")
+            self.assertEqual([commit["subject"] for commit in payload["commits"]], ["实现快照提交记录"])
+        finally:
+            wt.scan_project = original_scan_project
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def test_commits_remain_visible_after_merge_and_worktree_deletion(self) -> None:
         self.assertEqual(self.run_cli("start", "--title", "保留提交记录", "--task-id", "histdel1"), 0)

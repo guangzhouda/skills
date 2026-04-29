@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import copy
 import datetime as _dt
 import hashlib
 import http.server
@@ -13,6 +14,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 import uuid
@@ -30,6 +32,7 @@ except ImportError:  # pragma: no cover - POSIX path
 
 VERSION = 1
 STATE_DIR_NAME = "omx-worktrees"
+DASHBOARD_STATUS_CACHE_SECONDS = 2.0
 STATUS_VALUES = {
     "进行中",
     "有未提交修改",
@@ -547,6 +550,27 @@ def scan_project(cwd: Path, record_event: bool = True) -> dict:
     return state
 
 
+def read_state_snapshot(cwd: Path) -> tuple[dict, dict]:
+    project = discover_project(cwd)
+    return load_state(project), project
+
+
+def dashboard_status_payload(state: dict, stale: bool = False, warning: str | None = None) -> dict:
+    payload = copy.deepcopy(state)
+    metadata = payload.get("dashboard") if isinstance(payload.get("dashboard"), dict) else {}
+    metadata.update({"servedAt": utc_now(), "stale": stale})
+    if warning:
+        metadata["warning"] = warning
+    else:
+        metadata.pop("warning", None)
+    payload["dashboard"] = metadata
+    return payload
+
+
+def is_state_lock_timeout(exc: Exception) -> bool:
+    return isinstance(exc, WorktreeError) and "Timed out waiting for state lock" in str(exc)
+
+
 def table(state: dict) -> str:
     rows = []
     for task in state.get("tasks", []):
@@ -844,9 +868,12 @@ def task_events(project: dict, task_id: str, limit: int = 20) -> list[dict]:
     return events[-limit:]
 
 
-def build_commits_payload(cwd: Path, task_id: str, limit: int = 20) -> dict:
-    state = scan_project(cwd, record_event=False)
-    project = discover_project(cwd)
+def build_commits_payload(cwd: Path, task_id: str, limit: int = 20, refresh: bool = True) -> dict:
+    if refresh:
+        state = scan_project(cwd, record_event=False)
+        project = discover_project(cwd)
+    else:
+        state, project = read_state_snapshot(cwd)
     task = find_task(state, task_id)
     commit_range = task_commit_range(cwd, task, project)
     commits = read_task_commits(cwd, commit_range, limit)
@@ -921,6 +948,16 @@ def cmd_commits(args: argparse.Namespace) -> int:
 
 
 def dashboard_handler(cwd: Path, asset_dir: Path):
+    status_cache: dict[str, object] = {"payload": None, "updatedAt": 0.0}
+    status_refresh_lock = threading.Lock()
+
+    def cached_or_snapshot_status(warning: str) -> dict:
+        cached = status_cache.get("payload")
+        if isinstance(cached, dict):
+            return dashboard_status_payload(cached, stale=True, warning=warning)
+        state, _project = read_state_snapshot(cwd)
+        return dashboard_status_payload(state, stale=True, warning=warning)
+
     class Handler(http.server.SimpleHTTPRequestHandler):
         server_version = "WorktreeDashboard/1.0"
 
@@ -940,7 +977,26 @@ def dashboard_handler(cwd: Path, asset_dir: Path):
             parsed = urllib.parse.urlparse(self.path)
             if parsed.path == "/api/status":
                 try:
-                    self.send_json(scan_project(cwd, record_event=False))
+                    cached = status_cache.get("payload")
+                    cache_age = time.monotonic() - float(status_cache.get("updatedAt") or 0.0)
+                    if isinstance(cached, dict) and cache_age <= DASHBOARD_STATUS_CACHE_SECONDS:
+                        self.send_json(dashboard_status_payload(cached))
+                        return
+                    if not status_refresh_lock.acquire(blocking=False):
+                        self.send_json(cached_or_snapshot_status("status refresh already in progress"))
+                        return
+                    try:
+                        state = scan_project(cwd, record_event=False)
+                        status_cache["payload"] = state
+                        status_cache["updatedAt"] = time.monotonic()
+                        self.send_json(dashboard_status_payload(state))
+                    except Exception as exc:
+                        if is_state_lock_timeout(exc) or isinstance(status_cache.get("payload"), dict):
+                            self.send_json(cached_or_snapshot_status(str(exc)))
+                        else:
+                            raise
+                    finally:
+                        status_refresh_lock.release()
                 except Exception as exc:
                     self.send_json({"error": str(exc)}, status=500)
                 return
@@ -969,7 +1025,7 @@ def dashboard_handler(cwd: Path, asset_dir: Path):
                 except ValueError:
                     limit = 20
                 try:
-                    self.send_json(build_commits_payload(cwd, task_id, limit))
+                    self.send_json(build_commits_payload(cwd, task_id, limit, refresh=False))
                 except Exception as exc:
                     self.send_json({"error": str(exc)}, status=500)
                 return

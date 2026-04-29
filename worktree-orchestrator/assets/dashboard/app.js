@@ -4,6 +4,27 @@ function text(value) {
   return value === undefined || value === null || value === "" ? "-" : String(value);
 }
 
+const CHINA_TIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
+  timeZone: "Asia/Shanghai",
+  hour12: false,
+  hourCycle: "h23",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
+function chinaTime(value) {
+  const rendered = text(value);
+  if (rendered === "-") return rendered;
+  const date = new Date(rendered);
+  if (Number.isNaN(date.getTime())) return rendered;
+  const parts = Object.fromEntries(CHINA_TIME_FORMATTER.formatToParts(date).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} CST`;
+}
+
 let selectedTaskId = null;
 
 async function fetchJson(url) {
@@ -204,7 +225,7 @@ function cleanupSummary(task) {
 function renderState(state) {
   const project = state.project || {};
   const tasks = state.tasks || [];
-  $("project-line").textContent = `${text(project.name)} | 基线：${text(project.baseBranch)} | 扫描：${text(state.lastScanAt)}`;
+  $("project-line").textContent = `${text(project.name)} | 基线：${text(project.baseBranch)} | 扫描：${chinaTime(state.lastScanAt)}`;
 
   const counts = {
     active: tasks.filter((t) => !["已合并", "基线工作区"].includes(t.status)).length,
@@ -246,7 +267,7 @@ function renderState(state) {
       actionCell(task),
       td(mergeSummary(task)),
       td(cleanupSummary(task)),
-      td(task.updatedAt),
+      td(chinaTime(task.updatedAt)),
       codeCell(task.worktreePath),
     );
     body.appendChild(row);
@@ -262,7 +283,7 @@ function renderCommits(payload) {
   if (payload.merge && payload.merge.mergeCommit) {
     const merge = document.createElement("p");
     merge.className = "commit-meta";
-    merge.textContent = `合并提交：${shortSha(payload.merge.mergeCommit)} ${text(payload.merge.mergedAt)}`;
+    merge.textContent = `合并提交：${shortSha(payload.merge.mergeCommit)} ${chinaTime(payload.merge.mergedAt)}`;
     panel.appendChild(merge);
   }
 
@@ -282,7 +303,7 @@ function renderCommits(payload) {
       const meta = document.createElement("small");
       sha.textContent = shortSha(commit.sha || commit.shortSha);
       subject.textContent = text(commit.subject);
-      meta.textContent = `${text(commit.date)} ${text(commit.author)}`;
+      meta.textContent = `${chinaTime(commit.date)} ${text(commit.author)}`;
       head.append(sha, subject);
       item.append(head, meta);
       list.appendChild(item);
@@ -298,7 +319,7 @@ function renderCommits(payload) {
     list.className = "commit-events";
     for (const event of events.slice(-8).reverse()) {
       const item = document.createElement("li");
-      item.textContent = `${text(event.time)} ${displayEventType(event.type)} ${text(eventDetail(event) || event.message || event.tests || "")}`;
+      item.textContent = `${chinaTime(event.time)} ${displayEventType(event.type)} ${text(eventDetail(event) || event.message || event.tests || "")}`;
       list.appendChild(item);
     }
     panel.append(title, list);
@@ -326,7 +347,7 @@ function renderEvents(events) {
   clear(list);
   for (const event of (events || []).slice(-12).reverse()) {
     const item = document.createElement("li");
-    item.textContent = `${text(event.time)} ${displayEventType(event.type)} ${text(eventDetail(event))}`;
+    item.textContent = `${chinaTime(event.time)} ${displayEventType(event.type)} ${text(eventDetail(event))}`;
     list.appendChild(item);
   }
 }
