@@ -121,3 +121,8 @@ Do not use folder name or remote URL as the primary identity.
 - `commits --task-id <id>` and `/api/commits?taskId=<id>` derive task commit history from `git log`.
 - Unmerged tasks use `baseBranch..taskBranch`.
 - Merged tasks use the recorded merge preflight range (`baseSha..sourceSha`) when available, so history remains visible after the task worktree is deleted.
+- `/api/timeline` is a read-only, derived dashboard view for merged task lifecycle history. It uses only orchestrator-owned `state.json`, `events.jsonl`, and recorded merge/test/cleanup fields; it does not infer arbitrary Git history.
+- Timeline payloads include `source: "orchestrator"`, `eventLimit`, and `eventWindowMayBeTruncated`. When the event window may be truncated, missing nodes mean “not recorded or outside the loaded event window”.
+- Timeline nodes expose `status` (`complete`, `missing`, `retained`, `warning`) and `provenance` (`recorded`, `derived`, `missing`) so derived approval, inferred cleanup, and absent historical facts are visible instead of hidden.
+- Timeline sorting uses `sortTime` and `sortBasis` (`merged`, `cleanup`, `preflight`, `tests`, `created`, `updated`, `none`). `updated` is a low-confidence fallback because scans can refresh `updatedAt`.
+- A merged task with `git.exists == false` is treated as an inferred deleted worktree even when explicit cleanup fields are absent.

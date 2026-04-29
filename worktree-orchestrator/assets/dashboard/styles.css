@@ -88,6 +88,7 @@ main {
 
 .table-wrap,
 .commits,
+.timeline,
 .events {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -96,6 +97,7 @@ main {
 }
 
 .commits,
+.timeline,
 .events {
   margin-top: 16px;
   padding: 14px;
@@ -204,6 +206,75 @@ h3 {
   padding-left: 18px;
 }
 
+.timeline-warning {
+  color: var(--yellow);
+  margin-bottom: 8px;
+}
+
+.timeline-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.timeline-card {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.timeline-card-head {
+  align-items: baseline;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.timeline-card-head small,
+.timeline-node small,
+.timeline-node span {
+  display: block;
+}
+
+.timeline-nodes {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.timeline-node {
+  border-left: 3px solid var(--line);
+  border-radius: 4px;
+  margin: 0;
+  min-height: 82px;
+  padding: 8px;
+}
+
+.timeline-node.recorded {
+  border-left-color: var(--green);
+}
+
+.timeline-node.derived,
+.timeline-node.retained {
+  border-left-color: var(--blue);
+}
+
+.timeline-node.missing {
+  color: var(--muted);
+}
+
+.timeline-node.warning {
+  border-left-color: var(--yellow);
+}
+
+.timeline-task-warning {
+  color: var(--yellow);
+  margin-top: 8px;
+}
+
 tr.ready .badge {
   border-color: var(--green);
   color: var(--green);
@@ -241,5 +312,14 @@ li {
 
   .metrics {
     grid-template-columns: repeat(2, minmax(100px, 1fr));
+  }
+
+  .timeline-card-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .timeline-nodes {
+    grid-template-columns: 1fr;
   }
 }

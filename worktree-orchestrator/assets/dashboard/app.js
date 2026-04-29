@@ -26,6 +26,8 @@ function chinaTime(value) {
 }
 
 let selectedTaskId = null;
+let lastTimelineFetchAt = 0;
+const TIMELINE_REFRESH_MS = 10000;
 
 async function fetchJson(url) {
   const response = await fetch(url, { cache: "no-store" });
@@ -87,6 +89,19 @@ const EVENT_TYPE_LABELS = {
   delete_worktree: "删除工作树",
 };
 
+const NODE_PROVENANCE_LABELS = {
+  recorded: "已记录",
+  derived: "推断",
+  missing: "未记录",
+};
+
+const NODE_STATUS_LABELS = {
+  complete: "完成",
+  missing: "未记录",
+  retained: "保留",
+  warning: "需注意",
+};
+
 function classify(status) {
   if (status === "已测试待合并批准") return "ready";
   if (status === "有未提交修改") return "dirty";
@@ -125,6 +140,16 @@ function displayMergeSummary(summary) {
 function displayEventType(type) {
   const rendered = text(type);
   return EVENT_TYPE_LABELS[rendered] || rendered;
+}
+
+function displayNodeProvenance(provenance) {
+  const rendered = text(provenance);
+  return NODE_PROVENANCE_LABELS[rendered] || rendered;
+}
+
+function displayNodeStatus(status) {
+  const rendered = text(status);
+  return NODE_STATUS_LABELS[rendered] || rendered;
 }
 
 function displayTaskTitle(title) {
@@ -352,6 +377,83 @@ function renderEvents(events) {
   }
 }
 
+function renderTimeline(payload) {
+  const panel = $("timeline-panel");
+  const warning = $("timeline-warning");
+  clear(panel);
+  warning.textContent = "";
+  $("timeline-state").textContent = `更新时间：${chinaTime(payload.generatedAt)}`;
+
+  const warnings = payload.warnings || [];
+  const warningParts = [];
+  if (payload.eventWindowMayBeTruncated) {
+    warningParts.push(`事件窗口可能已截断：仅加载最近 ${text(payload.eventLimit)} 条事件，未记录节点也可能是超出加载窗口。`);
+  }
+  if (warnings.length) {
+    warningParts.push(`有 ${warnings.length} 个任务存在时间轴解析警告。`);
+  }
+  warning.textContent = warningParts.join(" ");
+
+  const tasks = payload.tasks || [];
+  if (!tasks.length) {
+    panel.textContent = "暂无已合并任务历史。";
+    return;
+  }
+
+  for (const task of tasks) {
+    const card = document.createElement("article");
+    card.className = "timeline-card";
+
+    const header = document.createElement("div");
+    header.className = "timeline-card-head";
+    const title = document.createElement("strong");
+    title.textContent = displayTaskTitle(task.title || task.taskId);
+    const meta = document.createElement("small");
+    meta.textContent = `${text(task.branch)} | ${text(task.taskId)} | 排序：${chinaTime(task.sortTime)} (${text(task.sortBasis)})`;
+    header.append(title, meta);
+
+    const nodes = document.createElement("ol");
+    nodes.className = "timeline-nodes";
+    for (const node of task.nodes || []) {
+      const item = document.createElement("li");
+      item.className = `timeline-node ${text(node.status)} ${text(node.provenance)}`;
+      const label = document.createElement("strong");
+      label.textContent = text(node.label);
+      const nodeMeta = document.createElement("small");
+      nodeMeta.textContent = `${chinaTime(node.time)} | ${displayNodeStatus(node.status)} | ${displayNodeProvenance(node.provenance)}`;
+      const summary = document.createElement("span");
+      summary.textContent = text(node.summary || (node.status === "missing" ? "未记录" : ""));
+      item.append(label, nodeMeta, summary);
+      nodes.appendChild(item);
+    }
+
+    if ((task.warnings || []).length) {
+      const taskWarnings = document.createElement("small");
+      taskWarnings.className = "timeline-task-warning";
+      taskWarnings.textContent = task.warnings.join("；");
+      card.append(header, nodes, taskWarnings);
+    } else {
+      card.append(header, nodes);
+    }
+    panel.appendChild(card);
+  }
+}
+
+async function maybeRefreshTimeline(force = false) {
+  const now = Date.now();
+  if (!force && now - lastTimelineFetchAt < TIMELINE_REFRESH_MS) return;
+  lastTimelineFetchAt = now;
+  try {
+    $("timeline-state").textContent = "刷新中";
+    const payload = await fetchJson("/api/timeline");
+    renderTimeline(payload);
+  } catch (error) {
+    $("timeline-state").textContent = "错误";
+    $("timeline-warning").textContent = "";
+    $("timeline-panel").textContent = error.message || "时间轴加载失败";
+  }
+}
+
 async function refresh() {
   try {
     $("refresh-state").textContent = "刷新中";
@@ -363,6 +465,7 @@ async function refresh() {
     renderState(status);
     renderEvents(events);
     if (selectedTaskId) await loadCommits(selectedTaskId, true);
+    await maybeRefreshTimeline();
     $("refresh-state").textContent = "实时";
   } catch (error) {
     $("refresh-state").textContent = "错误";
@@ -378,4 +481,5 @@ async function refresh() {
 }
 
 refresh();
+maybeRefreshTimeline(true);
 setInterval(refresh, 4000);

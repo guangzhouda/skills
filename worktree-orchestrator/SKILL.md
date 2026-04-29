@@ -88,7 +88,9 @@ python C:\Users\aojing\.codex\skills\worktree-orchestrator\scripts\worktree_task
 
 ## Dashboard
 
-`dashboard` serves a local read-only page on `127.0.0.1:8765` by default. It refreshes from the shared state and git scans every few seconds. It shows task status, branch, dirty state, ahead/behind counts, test state, merge blockers, cleanup status, task commit history, and recent events.
+`dashboard` serves a local read-only page on `127.0.0.1:8765` by default. It refreshes from the shared state and git scans every few seconds. It shows task status, branch, dirty state, ahead/behind counts, test state, merge blockers, cleanup status, task commit history, a read-only merged-task timeline, and recent events.
+
+The merged-task timeline is derived only from orchestrator-owned state and events. It marks each lifecycle node as recorded, derived, or missing, and missing nodes may mean the event was never recorded or is outside the loaded event window.
 
 The dashboard must not be used as a destructive control surface. Route merge, delete, push, rebase, and conflict handling through explicit skill/CLI flows.
 

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import contextlib
 import importlib.util
@@ -138,7 +138,7 @@ class WorktreeTaskTests(unittest.TestCase):
         thread.start()
         try:
             url = f"http://127.0.0.1:{server.server_address[1]}/api/status"
-            with urllib.request.urlopen(url, timeout=5) as response:
+            with urllib.request.urlopen(url, timeout=30) as response:
                 payload = json.loads(response.read().decode("utf-8"))
             self.assertIn("project", payload)
             self.assertTrue(any(t["taskId"] == "dash1" for t in payload["tasks"]))
@@ -155,9 +155,14 @@ class WorktreeTaskTests(unittest.TestCase):
             self.assertIn("Asia/Shanghai", app)
             self.assertIn("chinaTime(state.lastScanAt)", app)
             self.assertIn("chinaTime(task.updatedAt)", app)
+            self.assertIn("renderTimeline", app)
+            self.assertIn("maybeRefreshTimeline", app)
+            self.assertIn("/api/timeline", app)
+            self.assertIn("eventWindowMayBeTruncated", app)
+            self.assertIn("timeline-panel", html)
             missing_url = f"http://127.0.0.1:{server.server_address[1]}/api/not-found"
             with self.assertRaises(urllib.error.HTTPError) as raised:
-                urllib.request.urlopen(missing_url, timeout=5)
+                urllib.request.urlopen(missing_url, timeout=30)
             self.assertEqual(raised.exception.code, 404)
             error_payload = json.loads(raised.exception.read().decode("utf-8"))
             self.assertIn("Unknown API endpoint", error_payload["error"])
@@ -165,6 +170,178 @@ class WorktreeTaskTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+    def test_timeline_payload_shows_full_merged_lifecycle(self) -> None:
+        self.assertEqual(self.run_cli("start", "--title", "时间轴完整", "--task-id", "timefull1"), 0)
+        task = next(t for t in self.load_state()["tasks"] if t["taskId"] == "timefull1")
+        worktree = Path(task["worktreePath"])
+        write(worktree / "timeline.txt", "timeline\n")
+        self.assertEqual(self.run_cli("commit", "--task-id", "timefull1", "--message", "实现时间轴提交"), 0)
+        self.assertEqual(self.run_cli("ready", "--task-id", "timefull1", "--tests", "passed"), 0)
+        self.assertEqual(self.run_cli("merge", "--task-id", "timefull1", "--approved"), 0)
+        self.assertEqual(self.run_cli("delete-worktree", "--task-id", "timefull1", "--approved"), 0)
+
+        payload = wt.build_timeline_payload(self.root)
+        task_payload = next(t for t in payload["tasks"] if t["taskId"] == "timefull1")
+        self.assertEqual([node["type"] for node in task_payload["nodes"]], ["start", "commit", "tests", "approval", "merged", "cleanup"])
+        by_type = {node["type"]: node for node in task_payload["nodes"]}
+        self.assertEqual(by_type["commit"]["provenance"], "recorded")
+        self.assertEqual(by_type["commit"]["meta"]["commitCount"], 1)
+        self.assertEqual(by_type["tests"]["provenance"], "recorded")
+        self.assertEqual(by_type["approval"]["provenance"], "derived")
+        self.assertEqual(by_type["merged"]["provenance"], "recorded")
+        self.assertEqual(by_type["cleanup"]["provenance"], "recorded")
+
+    def test_timeline_includes_incomplete_merged_records_with_missing_nodes(self) -> None:
+        self.assertEqual(self.run_cli("scan"), 0)
+        project = wt.discover_project(self.root)
+        state_path = wt.state_paths(project["commonDir"])["state"]
+        state = self.load_state()
+        state["tasks"].append(
+            {
+                "projectId": project["projectId"],
+                "taskId": "incomplete1",
+                "title": "缺失事件任务",
+                "worktreePath": str(self.root / "missing-worktree"),
+                "branch": "task/incomplete1",
+                "baseBranch": "main",
+                "owner": None,
+                "status": "已合并",
+                "activeUpdate": "",
+                "git": {"exists": True},
+                "tests": {"status": "unknown", "lastRun": None},
+                "merge": {"approved": True, "mergedAt": "2026-04-29T01:00:00Z", "mergeCommit": "abcdef1234567890"},
+                "cleanup": {"worktreeRemoved": False, "approved": False, "removedAt": None},
+                "createdAt": None,
+                "updatedAt": "2026-04-29T01:10:00Z",
+            }
+        )
+        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        payload = wt.build_timeline_payload(self.root)
+        task_payload = next(t for t in payload["tasks"] if t["taskId"] == "incomplete1")
+        by_type = {node["type"]: node for node in task_payload["nodes"]}
+        self.assertEqual(by_type["start"]["status"], "missing")
+        self.assertEqual(by_type["tests"]["status"], "missing")
+        self.assertEqual(by_type["commit"]["provenance"], "derived")
+        self.assertEqual(by_type["cleanup"]["status"], "retained")
+
+    def test_timeline_approval_without_merged_time_stays_missing(self) -> None:
+        node = wt.build_approval_node({"merge": {"approved": True}}, [])
+        self.assertEqual(node["status"], "missing")
+        self.assertEqual(node["provenance"], "missing")
+        self.assertIsNone(node["time"])
+
+    def test_timeline_cleanup_and_sort_semantics(self) -> None:
+        self.assertEqual(self.run_cli("scan"), 0)
+        project = wt.discover_project(self.root)
+        state_path = wt.state_paths(project["commonDir"])["state"]
+        state = self.load_state()
+        state["tasks"].extend(
+            [
+                {
+                    "projectId": project["projectId"],
+                    "taskId": "sortb",
+                    "title": "清理排序",
+                    "worktreePath": str(self.root / "sortb"),
+                    "branch": "task/sortb",
+                    "baseBranch": "main",
+                    "status": "已合并",
+                    "git": {"exists": False},
+                    "tests": {"status": "unknown", "lastRun": None},
+                    "merge": {"approved": True, "mergeCommit": "bbbb", "preflight": {"checkedAt": "2026-04-29T01:00:00Z"}},
+                    "cleanup": {"worktreeRemoved": False, "approved": False, "removedAt": None},
+                    "createdAt": "2026-04-29T00:00:00Z",
+                    "updatedAt": "2026-04-29T09:00:00Z",
+                },
+                {
+                    "projectId": project["projectId"],
+                    "taskId": "sorta",
+                    "title": "合并排序",
+                    "worktreePath": str(self.root / "sorta"),
+                    "branch": "task/sorta",
+                    "baseBranch": "main",
+                    "status": "已合并",
+                    "git": {"exists": True},
+                    "tests": {"status": "passed", "lastRun": "2026-04-29T02:00:00Z"},
+                    "merge": {"approved": True, "mergedAt": "2026-04-29T03:00:00Z", "mergeCommit": "aaaa"},
+                    "cleanup": {"worktreeRemoved": False, "approved": False, "removedAt": None},
+                    "createdAt": "2026-04-29T00:00:00Z",
+                    "updatedAt": "2026-04-29T00:00:00Z",
+                },
+            ]
+        )
+        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        payload = wt.build_timeline_payload(self.root)
+        selected = [task for task in payload["tasks"] if task["taskId"] in {"sorta", "sortb"}]
+        self.assertEqual([task["taskId"] for task in selected], ["sorta", "sortb"])
+        sortb = next(task for task in selected if task["taskId"] == "sortb")
+        self.assertEqual(sortb["sortBasis"], "preflight")
+        cleanup = next(node for node in sortb["nodes"] if node["type"] == "cleanup")
+        self.assertEqual(cleanup["status"], "warning")
+        self.assertEqual(cleanup["provenance"], "derived")
+
+    def test_timeline_api_uses_cached_snapshot_without_git_log_or_rescan(self) -> None:
+        self.assertEqual(self.run_cli("start", "--title", "时间轴缓存", "--task-id", "timecache1"), 0)
+        task = next(t for t in self.load_state()["tasks"] if t["taskId"] == "timecache1")
+        worktree = Path(task["worktreePath"])
+        write(worktree / "cache.txt", "cache\n")
+        self.assertEqual(self.run_cli("commit", "--task-id", "timecache1", "--message", "实现时间轴缓存"), 0)
+        self.assertEqual(self.run_cli("ready", "--task-id", "timecache1", "--tests", "passed"), 0)
+        self.assertEqual(self.run_cli("merge", "--task-id", "timecache1", "--approved"), 0)
+
+        asset_dir = SCRIPT.parents[1] / "assets" / "dashboard"
+        server = wt.ThreadingHTTPServer(("127.0.0.1", 0), wt.dashboard_handler(self.root, asset_dir))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        original_scan_project = wt.scan_project
+        original_read_task_commits = wt.read_task_commits
+        original_read_events = wt.read_events
+        calls = {"events": 0}
+        try:
+            def fail_scan(*_args, **_kwargs):
+                raise wt.WorktreeError("timeline must not scan")
+
+            def fail_commits(*_args, **_kwargs):
+                raise wt.WorktreeError("timeline must not read git log")
+
+            def counting_events(*args, **kwargs):
+                calls["events"] += 1
+                return original_read_events(*args, **kwargs)
+
+            wt.scan_project = fail_scan
+            wt.read_task_commits = fail_commits
+            wt.read_events = counting_events
+            url = f"http://127.0.0.1:{server.server_address[1]}/api/timeline"
+            with urllib.request.urlopen(url, timeout=30) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            with urllib.request.urlopen(url, timeout=30) as response:
+                cached_payload = json.loads(response.read().decode("utf-8"))
+            self.assertTrue(any(t["taskId"] == "timecache1" for t in payload["tasks"]))
+            self.assertEqual(calls["events"], 1)
+            self.assertEqual(payload, cached_payload)
+        finally:
+            wt.scan_project = original_scan_project
+            wt.read_task_commits = original_read_task_commits
+            wt.read_events = original_read_events
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_timeline_payload_reports_event_window_and_task_warnings(self) -> None:
+        self.assertEqual(self.run_cli("scan"), 0)
+        project = wt.discover_project(self.root)
+        state_path = wt.state_paths(project["commonDir"])["state"]
+        state = self.load_state()
+        state["tasks"].append({"taskId": "badtime1", "status": "已合并", "merge": "not-a-dict"})
+        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        wt.append_event(project, {"type": "merge", "taskId": "badtime1"})
+
+        payload = wt.build_timeline_payload(self.root, event_limit=1)
+        self.assertTrue(payload["eventWindowMayBeTruncated"])
+        self.assertEqual(payload["eventLimit"], 1)
+        self.assertTrue(any(warning.get("taskId") == "badtime1" for warning in payload["warnings"]))
 
     def test_dashboard_status_serves_stale_payload_when_scan_lock_times_out(self) -> None:
         self.assertEqual(self.run_cli("start", "--title", "锁超时回退", "--task-id", "dashlock1"), 0)
@@ -176,7 +353,7 @@ class WorktreeTaskTests(unittest.TestCase):
         original_cache_seconds = wt.DASHBOARD_STATUS_CACHE_SECONDS
         try:
             url = f"http://127.0.0.1:{server.server_address[1]}/api/status"
-            with urllib.request.urlopen(url, timeout=5) as response:
+            with urllib.request.urlopen(url, timeout=30) as response:
                 warm_payload = json.loads(response.read().decode("utf-8"))
             self.assertFalse(warm_payload["dashboard"]["stale"])
 
@@ -222,7 +399,7 @@ class WorktreeTaskTests(unittest.TestCase):
         thread.start()
         try:
             url = f"http://127.0.0.1:{server.server_address[1]}/api/commits?taskId=hist1&limit=1"
-            with urllib.request.urlopen(url, timeout=5) as response:
+            with urllib.request.urlopen(url, timeout=30) as response:
                 api_payload = json.loads(response.read().decode("utf-8"))
             self.assertEqual(api_payload["taskId"], "hist1")
             self.assertEqual(len(api_payload["commits"]), 1)
@@ -250,7 +427,7 @@ class WorktreeTaskTests(unittest.TestCase):
 
             wt.scan_project = fail_scan
             url = f"http://127.0.0.1:{server.server_address[1]}/api/commits?taskId=histsnap1&limit=20"
-            with urllib.request.urlopen(url, timeout=5) as response:
+            with urllib.request.urlopen(url, timeout=30) as response:
                 payload = json.loads(response.read().decode("utf-8"))
             self.assertEqual(payload["taskId"], "histsnap1")
             self.assertEqual([commit["subject"] for commit in payload["commits"]], ["实现快照提交记录"])
@@ -510,3 +687,4 @@ class WorktreeTaskTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

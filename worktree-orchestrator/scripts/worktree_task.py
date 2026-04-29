@@ -33,6 +33,7 @@ except ImportError:  # pragma: no cover - POSIX path
 VERSION = 1
 STATE_DIR_NAME = "omx-worktrees"
 DASHBOARD_STATUS_CACHE_SECONDS = 2.0
+DASHBOARD_TIMELINE_CACHE_SECONDS = 10.0
 STATUS_VALUES = {
     "进行中",
     "有未提交修改",
@@ -571,6 +572,264 @@ def is_state_lock_timeout(exc: Exception) -> bool:
     return isinstance(exc, WorktreeError) and "Timed out waiting for state lock" in str(exc)
 
 
+def timeline_node(
+    node_type: str,
+    label: str,
+    time_value: str | None = None,
+    status: str = "missing",
+    provenance: str = "missing",
+    summary: str = "未记录",
+    meta: dict | None = None,
+) -> dict:
+    return {
+        "type": node_type,
+        "label": label,
+        "time": time_value,
+        "status": status,
+        "provenance": provenance,
+        "summary": summary,
+        "meta": meta or {},
+    }
+
+
+def first_event(events: list[dict], event_type: str) -> dict | None:
+    return next((event for event in events if event.get("type") == event_type), None)
+
+
+def last_event(events: list[dict], event_type: str) -> dict | None:
+    return next((event for event in reversed(events) if event.get("type") == event_type), None)
+
+
+def group_events_by_task(events: list[dict]) -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = {}
+    for event in events:
+        task_id = event.get("taskId")
+        if task_id:
+            grouped.setdefault(task_id, []).append(event)
+    return grouped
+
+
+def merged_timeline_candidate(task: dict) -> bool:
+    merge = task.get("merge", {}) if isinstance(task.get("merge", {}), dict) else {}
+    return bool(task.get("status") == "已合并" or merge.get("mergedAt") or merge.get("mergeCommit"))
+
+
+def build_start_node(task: dict, events: list[dict]) -> dict:
+    event = first_event(events, "start")
+    if event and event.get("time"):
+        return timeline_node("start", "创建任务", event["time"], "complete", "recorded", "任务已创建")
+    if task.get("createdAt"):
+        return timeline_node("start", "创建任务", task.get("createdAt"), "complete", "derived", "由任务创建时间推断")
+    return timeline_node("start", "创建任务")
+
+
+def build_commit_node(task: dict, events: list[dict]) -> dict:
+    commit_events = [event for event in events if event.get("type") == "commit"]
+    if commit_events:
+        latest = commit_events[-1]
+        latest_sha = latest.get("sha")
+        summary = latest.get("message") or (f"最新提交 {short_ref(latest_sha)}" if latest_sha else "已有提交记录")
+        return timeline_node(
+            "commit",
+            "提交 commit",
+            latest.get("time"),
+            "complete",
+            "recorded",
+            summary,
+            {"commitCount": len(commit_events), "latestSha": latest_sha},
+        )
+    merge = task.get("merge", {})
+    preflight = merge.get("preflight", {})
+    source_sha = preflight.get("sourceSha")
+    if source_sha:
+        return timeline_node(
+            "commit",
+            "提交 commit",
+            preflight.get("checkedAt"),
+            "complete",
+            "derived",
+            f"源提交 {short_ref(source_sha)}",
+            {"latestSha": source_sha},
+        )
+    merge_commit = merge.get("mergeCommit")
+    if merge_commit:
+        return timeline_node(
+            "commit",
+            "提交 commit",
+            merge.get("mergedAt"),
+            "complete",
+            "derived",
+            f"通过合并 {short_ref(merge_commit)}",
+            {"latestSha": merge_commit},
+        )
+    return timeline_node("commit", "提交 commit")
+
+
+def build_tests_node(task: dict, events: list[dict]) -> dict:
+    ready_events = [event for event in events if event.get("type") == "ready" and event.get("tests") == "passed"]
+    if ready_events:
+        latest = ready_events[-1]
+        return timeline_node("tests", "标记测试通过", latest.get("time"), "complete", "recorded", "测试通过")
+    tests = task.get("tests", {})
+    if tests.get("status") == "passed" and tests.get("lastRun"):
+        return timeline_node("tests", "标记测试通过", tests.get("lastRun"), "complete", "derived", "由测试状态推断")
+    return timeline_node("tests", "标记测试通过")
+
+
+def build_approval_node(task: dict, events: list[dict]) -> dict:
+    approval_event = last_event(events, "approval")
+    merge = task.get("merge", {})
+    if approval_event and approval_event.get("time"):
+        return timeline_node("approval", "批准合并", approval_event.get("time"), "complete", "recorded", "已批准合并")
+    if merge.get("approvedAt"):
+        return timeline_node("approval", "批准合并", merge.get("approvedAt"), "complete", "recorded", "已批准合并")
+    if merge.get("approved") and merge.get("mergedAt"):
+        return timeline_node("approval", "批准合并", merge.get("mergedAt"), "complete", "derived", "合并时确认批准")
+    return timeline_node("approval", "批准合并")
+
+
+def build_merged_node(task: dict, events: list[dict]) -> dict:
+    merge = task.get("merge", {})
+    merge_event = last_event(events, "merge")
+    merge_commit = merge.get("mergeCommit") or (merge_event or {}).get("mergeCommit")
+    merged_at = merge.get("mergedAt") or (merge_event or {}).get("time")
+    if merged_at or merge_commit:
+        return timeline_node(
+            "merged",
+            "完成合并",
+            merged_at,
+            "complete",
+            "recorded",
+            f"合并提交 {short_ref(merge_commit)}" if merge_commit else "已完成合并",
+            {"mergeCommit": merge_commit},
+        )
+    return timeline_node("merged", "完成合并")
+
+
+def build_cleanup_node(task: dict, events: list[dict]) -> dict:
+    cleanup = task.get("cleanup", {})
+    delete_event = last_event(events, "delete_worktree")
+    if cleanup.get("worktreeRemoved") or cleanup.get("removedAt"):
+        return timeline_node(
+            "cleanup",
+            "删除/保留 worktree",
+            cleanup.get("removedAt") or (delete_event or {}).get("time"),
+            "complete",
+            "recorded",
+            "已删除 worktree",
+            {"worktreePath": cleanup.get("worktreePath") or task.get("worktreePath")},
+        )
+    if task.get("git", {}).get("exists") is False:
+        return timeline_node(
+            "cleanup",
+            "删除/保留 worktree",
+            (delete_event or {}).get("time"),
+            "warning",
+            "derived",
+            "worktree 已不存在（由 git 状态推断）",
+            {"worktreePath": task.get("worktreePath")},
+        )
+    if merged_timeline_candidate(task):
+        return timeline_node(
+            "cleanup",
+            "删除/保留 worktree",
+            None,
+            "retained",
+            "derived",
+            "保留 worktree",
+            {"worktreePath": task.get("worktreePath")},
+        )
+    return timeline_node("cleanup", "删除/保留 worktree")
+
+
+def parse_utc_timestamp(value: str | None) -> _dt.datetime | None:
+    if not value:
+        return None
+    try:
+        return _dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def sort_time_for_task(task: dict, nodes: list[dict]) -> tuple[str | None, str]:
+    by_type = {node.get("type"): node for node in nodes}
+    candidates = [
+        (by_type.get("merged", {}).get("time"), "merged"),
+        (task.get("cleanup", {}).get("removedAt"), "cleanup"),
+        (task.get("merge", {}).get("preflight", {}).get("checkedAt"), "preflight"),
+        (task.get("tests", {}).get("lastRun"), "tests"),
+        (task.get("createdAt"), "created"),
+        (task.get("updatedAt"), "updated"),
+    ]
+    for value, basis in candidates:
+        if parse_utc_timestamp(value):
+            return value, basis
+    return None, "none"
+
+
+def timeline_sort_key(task: dict) -> tuple[float, str]:
+    parsed = parse_utc_timestamp(task.get("sortTime"))
+    timestamp = parsed.timestamp() if parsed else float("-inf")
+    return (-timestamp, task.get("taskId") or "")
+
+
+def build_task_timeline(task: dict, events: list[dict]) -> dict:
+    nodes = [
+        build_start_node(task, events),
+        build_commit_node(task, events),
+        build_tests_node(task, events),
+        build_approval_node(task, events),
+        build_merged_node(task, events),
+        build_cleanup_node(task, events),
+    ]
+    sort_time, sort_basis = sort_time_for_task(task, nodes)
+    merge = task.get("merge", {})
+    return {
+        "taskId": task.get("taskId"),
+        "title": task.get("title"),
+        "branch": task.get("branch"),
+        "baseBranch": task.get("baseBranch"),
+        "status": task.get("status"),
+        "mergeCommit": merge.get("mergeCommit"),
+        "mergedAt": merge.get("mergedAt"),
+        "sortTime": sort_time,
+        "sortBasis": sort_basis,
+        "nodes": nodes,
+        "warnings": [],
+    }
+
+
+def build_timeline_payload(cwd: Path, event_limit: int = 1000) -> dict:
+    state, project = read_state_snapshot(cwd)
+    events = read_events(project, limit=event_limit)
+    grouped_events = group_events_by_task(events)
+    tasks = []
+    warnings = []
+    for task in state.get("tasks", []):
+        try:
+            if not merged_timeline_candidate(task):
+                continue
+            tasks.append(build_task_timeline(task, grouped_events.get(task.get("taskId"), [])))
+        except Exception as exc:
+            warnings.append(
+                {
+                    "taskId": task.get("taskId"),
+                    "title": task.get("title"),
+                    "worktreePath": task.get("worktreePath"),
+                    "warning": str(exc),
+                }
+            )
+    tasks.sort(key=timeline_sort_key)
+    return {
+        "generatedAt": utc_now(),
+        "source": "orchestrator",
+        "eventLimit": event_limit,
+        "eventWindowMayBeTruncated": len(events) >= event_limit,
+        "tasks": tasks,
+        "warnings": warnings,
+    }
+
+
 def table(state: dict) -> str:
     rows = []
     for task in state.get("tasks", []):
@@ -949,6 +1208,7 @@ def cmd_commits(args: argparse.Namespace) -> int:
 
 def dashboard_handler(cwd: Path, asset_dir: Path):
     status_cache: dict[str, object] = {"payload": None, "updatedAt": 0.0}
+    timeline_cache: dict[str, object] = {"payload": None, "updatedAt": 0.0}
     status_refresh_lock = threading.Lock()
 
     def cached_or_snapshot_status(warning: str) -> dict:
@@ -1004,6 +1264,20 @@ def dashboard_handler(cwd: Path, asset_dir: Path):
                 try:
                     project = discover_project(cwd)
                     self.send_json({k: project[k] for k in ("projectId", "name", "root", "commonDir", "baseBranch")})
+                except Exception as exc:
+                    self.send_json({"error": str(exc)}, status=500)
+                return
+            if parsed.path == "/api/timeline":
+                try:
+                    cached = timeline_cache.get("payload")
+                    cache_age = time.monotonic() - float(timeline_cache.get("updatedAt") or 0.0)
+                    if isinstance(cached, dict) and cache_age <= DASHBOARD_TIMELINE_CACHE_SECONDS:
+                        self.send_json(cached)
+                        return
+                    payload = build_timeline_payload(cwd)
+                    timeline_cache["payload"] = payload
+                    timeline_cache["updatedAt"] = time.monotonic()
+                    self.send_json(payload)
                 except Exception as exc:
                     self.send_json({"error": str(exc)}, status=500)
                 return
